@@ -1,0 +1,31 @@
+# On every pushed tag (e.g. v0.1.0): cross-compile socsonde with the Android NDK
+# that GitHub's Ubuntu runners have preinstalled, package it as a Termux .deb,
+# and attach it to the GitHub release for that tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .deb
+        run: VERSION="${GITHUB_REF_NAME#v}" bash ./packaging/build-deb.sh ${{ matrix.arch }}
+        env:
+          HOMEPAGE: https://github.com/${{ github.repository }}
+          MAINTAINER: ${{ github.repository_owner }} <${{ github.repository_owner }}@users.noreply.github.com>
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: socsonde_*.deb

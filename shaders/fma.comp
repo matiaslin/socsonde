@@ -1,0 +1,22 @@
+#version 450
+// FMA-bound compute kernel. Converges to 1.0 so values stay finite forever;
+// the host checks that, which proves the GPU actually executed the work.
+
+// Boilerplate for Vulkan compute shader
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Buf { vec4 data[]; };
+layout(push_constant) uniform PC { uint iters; } pc;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  vec4 b = vec4(0.9999, 0.99991, 0.99992, 0.99993);
+  vec4 c = vec4(1.0) - b;
+  vec4 x = data[i], y = x, z = x, w = x;
+  for (uint k = 0u; k < pc.iters; k++) {
+    x = fma(x, b, c);
+    y = fma(y, b.yzwx, c.yzwx);
+    z = fma(z, b.zwxy, c.zwxy);
+    w = fma(w, b.wxyz, c.wxyz);
+  }
+  data[i] = (x + y + z + w) * 0.25;
+}
