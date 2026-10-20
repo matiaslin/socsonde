@@ -35,11 +35,29 @@ FN(vkCreateFence); FN(vkDestroyFence); FN(vkQueueSubmit); FN(vkWaitForFences); F
 
 static VkInstance inst;
 
+static const char *vk_lib = ""; // the loader we end up using
+
 static int vk_init(void) {
-  static const char *libs[] = { "libvulkan.so", "libvulkan.so.1", "/system/lib64/libvulkan.so" };
+  // We prefer Android's own Vulkan loader (phone's GPU driver), instead of
+  // what might be installed in Termux.
+  static const char *libs[] = {
+      NULL,                         // reserved for SOCSONDE_VULKAN_LIB (if set)
+#ifdef __ANDROID__
+#  ifdef __LP64__
+      "/system/lib64/libvulkan.so",
+#  else
+      "/system/lib/libvulkan.so",
+#  endif
+#endif
+      "libvulkan.so.1", "libvulkan.so" };
+	libs[0] = getenv("SOCSONDE_VULKAN_LIB");
+
   void *h = NULL;
   for (size_t i = 0; i < sizeof libs / sizeof *libs && !h; i++) {
+		if (!libs[i]) continue;
     h = dlopen(libs[i], RTLD_NOW | RTLD_LOCAL);
+    if (h) vk_lib = libs[i];
+    else if (i == 0) fprintf(stderr, "vulkan: SOCSONDE_VULKAN_LIB=%s: %s\n", libs[i], dlerror());
   }
   if (!h) {
     fprintf(stderr, "vulkan: cannot dlopen libvulkan: %s\n", dlerror());
@@ -55,7 +73,10 @@ static int vk_init(void) {
   VkInstanceCreateInfo ci = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, 0, NULL, 0, NULL };
   VkResult r = vkCreateInstance(&ci, NULL, &inst);
   if (r != VK_SUCCESS) {
-    fprintf(stderr, "vulkan: vkCreateInstance failed (%d)\n", r);
+    fprintf(stderr, "vulkan: vkCreateInstance failed (%d) using %s\n", r, vk_lib);
+    if (r == VK_ERROR_INCOMPATIBLE_DRIVER) {
+	    fprintf(stderr, "vulkan: loader found no GPU driver. Try using SOCSONDE_VULKAN_LIB=/system/lib64/libvulkan.so\n");
+		}
     return -1;
   }
 
@@ -82,31 +103,32 @@ static int vk_init(void) {
 }
 
 static const char *dev_type(VkPhysicalDeviceType t) {
-    switch (t) {
+  switch (t) {
     case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "integrated-gpu";
     case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return "discrete-gpu";
     case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return "virtual-gpu";
     case VK_PHYSICAL_DEVICE_TYPE_CPU: return "cpu (software)";
     default: return "other";
-    }
+  }
 }
 
 int vk_list(FILE *f) {
-    if (vk_init()) return -1;
-    uint32_t n = 0;
-    vkEnumeratePhysicalDevices(inst, &n, NULL);
-    VkPhysicalDevice pd[8];
-    if (n > 8) n = 8;
-    vkEnumeratePhysicalDevices(inst, &n, pd);
-    for (uint32_t i = 0; i < n; i++) {
-        VkPhysicalDeviceProperties p;
-        vkGetPhysicalDeviceProperties(pd[i], &p);
-        fprintf(f, "  [%u] %s (%s) api %u.%u.%u driver 0x%x\n", i, p.deviceName, dev_type(p.deviceType),
-                VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion), VK_VERSION_PATCH(p.apiVersion),
-                p.driverVersion);
-    }
-    vkDestroyInstance(inst, NULL);
-    return (int)n;
+  if (vk_init()) return -1;
+	fprintf(f, "  loader: %s\n", vk_lib);
+  uint32_t n = 0;
+  vkEnumeratePhysicalDevices(inst, &n, NULL);
+  VkPhysicalDevice pd[8];
+  if (n > 8) n = 8;
+  vkEnumeratePhysicalDevices(inst, &n, pd);
+  for (uint32_t i = 0; i < n; i++) {
+    VkPhysicalDeviceProperties p;
+    vkGetPhysicalDeviceProperties(pd[i], &p);
+    fprintf(f, "  [%u] %s (%s) api %u.%u.%u driver 0x%x\n", i, p.deviceName, dev_type(p.deviceType),
+            VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion), VK_VERSION_PATCH(p.apiVersion),
+            p.driverVersion);
+  }
+  vkDestroyInstance(inst, NULL);
+  return (int)n;
 }
 
 #define CK(x) do { VkResult _r = (x); if (_r != VK_SUCCESS) { fprintf(stderr, "vulkan: %s failed (%d)\n", #x, _r); return 1; } } while (0)
@@ -116,6 +138,7 @@ int cmd_gpu(int argc, char **argv) {
   uint32_t iters = (uint32_t)opt_d(argc, argv, "--iters", 1024);
   uint32_t groups = (uint32_t)opt_d(argc, argv, "--groups", 4096);
   uint32_t per_submit = (uint32_t)opt_d(argc, argv, "--batch", 4);
+  int pick_dev = opt_s(argc, argv, "--device", NULL) == NULL;
   uint32_t want = (uint32_t)opt_d(argc, argv, "--device", 0);
 
   if (vk_init()) {
@@ -126,6 +149,15 @@ int cmd_gpu(int argc, char **argv) {
   uint32_t n = 8;
   VkPhysicalDevice pds[8];
   vkEnumeratePhysicalDevices(inst, &n, pds);
+  if (pick_dev) {
+    // Default to the first real GPU. A software Vulkan driver (e.g. Mesa's
+    // lavapipe) would run this load on the CPU.
+    for (uint32_t i = 0; i < n; i++) {
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pds[i], &p);
+        if (p.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) { want = i; break; }
+    }
+  }
   if (!n || want >= n) {
     fprintf(stderr, "vulkan: no device %u (have %u)\n", want, n);
     return 1;
@@ -134,6 +166,11 @@ int cmd_gpu(int argc, char **argv) {
   VkPhysicalDevice pd = pds[want];
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(pd, &props);
+  int software = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+  if (software) {
+    fprintf(stderr, "vulkan: warning: %s is a software driver; this load runs on the CPU, not a GPU\n",
+            props.deviceName);
+  }
 
   // The following sequence is inspired by:
   // https://github.com/SaschaWillems/Vulkan/blob/master/examples/computeheadless/computeheadless.cpp
@@ -275,8 +312,8 @@ int cmd_gpu(int argc, char **argv) {
   double gflops = dispatches * flop_per_dispatch / el / 1e9;
   printf("dispatches %llu in %.2fs, %.1f GFLOP/s, worst submit %.1f ms, result check %s (min %.4f max %.4f)\n",
          dispatches, el, gflops, worst * 1e3, ok ? "OK" : "FAILED", mn, mx);
-  printf("RESULT {\"ok\":%s,\"device\":\"%s\",\"gflops\":%.1f,\"dispatches\":%llu,\"worst_submit_ms\":%.1f}\n",
-         ok ? "true" : "false", props.deviceName, gflops, dispatches, worst * 1e3);
+  printf("RESULT {\"ok\":%s,\"device\":\"%s\",\"software\":%s,\"gflops\":%.1f,\"dispatches\":%llu,\"worst_submit_ms\":%.1f}\n",
+         ok ? "true" : "false", props.deviceName, software ? "true" : "false", gflops, dispatches, worst * 1e3);
 
   // clean-up
   vkDeviceWaitIdle(dev);

@@ -25,6 +25,10 @@ jobs:
           HOMEPAGE: https://github.com/${{ github.repository }}
           MAINTAINER: ${{ github.repository_owner }} <${{ github.repository_owner }}@users.noreply.github.com>
 
+      # Same file under a latest name
+      - name: Add latest copy
+        run: cp "socsonde_${GITHUB_REF_NAME#v}_${{ matrix.arch }}.deb" "socsonde_${{ matrix.arch }}.deb"
+
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:

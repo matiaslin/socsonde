@@ -7,8 +7,8 @@ Monitor CPU and GPU for Android phones from inside Termux.
 Download the `.deb` for your phone from the [releases page](https://github.com/matiaslin/socsonde/releases) (`aarch64` for almost all phones), then in Termux:
 
 ```sh
-curl -LO https://github.com/matiaslin/socsonde/releases/download/v0.1.0/socsonde_0.1.0_aarch64.deb
-apt install ./socsonde_0.1.0_aarch64.deb
+curl -LO https://github.com/matiaslin/socsonde/releases/latest/download/socsonde_aarch64.deb
+apt install ./socsonde_aarch64.deb
 socsonde info
 ```
 
